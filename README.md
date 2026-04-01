@@ -10,11 +10,13 @@ If you need advanced role and permission management, SSO, or customizations, con
 Community support is offered [in Slack in the channel #entropy-data](https://datacontract.com/slack) and via [GitHub Issues](https://github.com/entropy-data/entropy-data-ce/issues).
 
 Supported Deployments:
-- Anywhere that can run a Docker image and offer a postgres database
+- Anywhere that can run a Docker image and a postgres database
 - [Locally via Docker Compose](https://github.com/entropy-data/entropy-data-ce/blob/main/docker-compose.yaml)
 - [On Kubernetes with Helm](https://github.com/entropy-data/entropy-data-helm)
 - [On AWS with Cloudformation](https://eu-central-1.console.aws.amazon.com/cloudformation/home?region=eu-central-1#/stacks/create/review?templateURL=https://entropy-data-ce.s3.us-east-1.amazonaws.com/template.yaml)
-- [On Azure with bicep template](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fentropy-data%2Fentropy-data-ce%2Fmain%2Fazure%2Fentropy-data-ce.json)
+- [On Azure with Bicep template](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fentropy-data%2Fentropy-data-ce%2Fmain%2Fazure%2Fentropy-data-ce.json)
+- [On Azure with Terraform template](https://github.com/entropy-data/entropy-data-terraform-azure)
+
 
 ## Demo
 
