@@ -1,4 +1,4 @@
-# Entropy Data (Community Edition)
+# <img width="400" alt="Entropy Data" src="https://github.com/user-attachments/assets/8cf58c48-0ed4-4310-9470-b935dc1bbcc7" />
 
 [![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fentropy-data%2Fentropy-data-ce%2Fmain%2Fazure%2Fentropy-data-ce.json) [![Deploy to AWS](images/deploytoaws.svg)](https://eu-central-1.console.aws.amazon.com/cloudformation/home?region=eu-central-1#/stacks/create/review?templateURL=https://entropy-data-ce.s3.us-east-1.amazonaws.com/template.yaml)
 
@@ -7,7 +7,7 @@ Entropy Data (Community Edition) is a free version of the [Entropy Data](https:/
 In the Community Edition, every user can change any data product or data contract.  
 If you need advanced role and permission management, SSO, or customizations, consider the [Enterprise Edition](https://www.entropy-data.com/#pricing).
 
-Community support is offered [in Slack in the channel #entropy-data](https://datacontract.com/slack).
+Community support is offered [in Slack in the channel #entropy-data](https://datacontract.com/slack) and via [GitHub Issues](https://github.com/entropy-data/entropy-data-ce/issues).
 
 Supported Deployments:
 - Anywhere that can run a Docker image and offer a postgres database
