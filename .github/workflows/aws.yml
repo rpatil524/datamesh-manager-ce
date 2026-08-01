@@ -6,6 +6,9 @@ on:
     paths:
       - 'aws/**'
 
+permissions:
+  contents: read
+
 jobs:
   taskcat:
     name: Execute TaskCat Tests
