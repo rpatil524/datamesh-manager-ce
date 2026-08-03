@@ -4,8 +4,6 @@
 
 Please report security vulnerabilities to **security@entropy-data.com**.
 
-Alternatively, use GitHub's [private vulnerability reporting](https://github.com/entropy-data/entropy-data-ce/security/advisories/new) to open a confidential advisory.
-
 Do not open a public issue for a security vulnerability.
 
 Helpful details to include:
