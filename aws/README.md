@@ -39,8 +39,9 @@ aws cloudformation create-stack \
 
 ## Testing the CloudFormation Template
 
-This is done automatically via GitHub Actions to ensure that the cloud formation template still works.
-
+Run this manually before changing `template.yaml`. A TaskCat run deploys the whole stack — VPC, NAT
+gateway, two RDS instances and an App Runner service — so it needs an account you are willing to have
+stacks created in, and it bills for the duration of the test.
 
 ### Running Taskcat
 
