@@ -1,0 +1,612 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Entropy Data on Amazon ECS (Fargate) behind an Application Load Balancer with an Amazon RDS PostgreSQL database'
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label: { default: Application }
+        Parameters: [ApplicationName, ImageIdentifier, ApplicationHostWeb, SuperAdmins, TaskCpu, TaskMemory, DesiredCount, MaxCount]
+      - Label: { default: Load balancer }
+        Parameters: [CertificateArn]
+      - Label: { default: Database }
+        Parameters: [DBInstanceClass, AllocatedStorage, MaxAllocatedStorage, DBName, DBMultiAZ, DBDeletionProtection]
+      - Label: { default: SMTP }
+        Parameters: [SMTPHost, SMTPPort, SMTPUsername, SMTPPassword, SMTPBasicAuth, SMTPStartTLS, MailFrom]
+      - Label: { default: Azure SSO (optional) }
+        Parameters: [AzureSsoEnabled, AzureSsoIssuerUri, AzureSsoClientId, AzureSsoClientSecret]
+
+Parameters:
+  ApplicationName:
+    Type: String
+    Default: entropy-data
+    Description: 'Name prefix for all resources (cluster, service, log group, ...)'
+    AllowedPattern: '^[a-z][a-z0-9-]{1,30}$'
+  ImageIdentifier:
+    Type: String
+    Default: 'public.ecr.aws/s4e5k7s9/entropy-data-ce:latest'
+    Description: 'Container image. Docker Hub images (entropydata/entropy-data-ce, or entropydata/entropy-data for the enterprise version) work as well.'
+  ApplicationHostWeb:
+    Type: String
+    Default: ''
+    Description: 'Public URL of the application, e.g. https://entropy.example.com. Used in emails to build links. Leave empty to use the load balancer DNS name over HTTP.'
+  SuperAdmins:
+    Type: String
+    Default: ''
+    Description: 'Comma-separated email addresses of super admins. Can be changed later.'
+  TaskCpu:
+    Type: String
+    Default: '1024'
+    AllowedValues: ['1024', '2048', '4096']
+    Description: 'CPU units per task (1024 = 1 vCPU)'
+  TaskMemory:
+    Type: String
+    Default: '4096'
+    AllowedValues: ['2048', '4096', '8192', '16384']
+    Description: 'Memory per task in MiB. Must be a valid Fargate combination with TaskCpu.'
+  DesiredCount:
+    Type: Number
+    Default: 1
+    MinValue: 1
+    Description: 'Minimum number of running tasks'
+  MaxCount:
+    Type: Number
+    Default: 4
+    MinValue: 1
+    Description: 'Maximum number of tasks for CPU based autoscaling'
+  CertificateArn:
+    Type: String
+    Default: ''
+    Description: 'ACM certificate ARN for HTTPS on the load balancer. Leave empty for HTTP only (not recommended for production).'
+  DBInstanceClass:
+    Type: String
+    Default: db.t4g.small
+    Description: 'RDS instance class'
+  AllocatedStorage:
+    Type: Number
+    Default: 20
+    MinValue: 20
+    Description: 'Allocated storage in GB (gp3)'
+  MaxAllocatedStorage:
+    Type: Number
+    Default: 100
+    MinValue: 20
+    Description: 'Upper limit in GB for storage autoscaling'
+  DBName:
+    Type: String
+    Default: postgres
+    Description: 'Initial database name'
+  DBMultiAZ:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: 'Multi-AZ deployment for the database'
+  DBDeletionProtection:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: 'Protect the database from deletion. Set to false before deleting the stack.'
+  SMTPHost:
+    Type: String
+    Default: 'smtp.example.com'
+    Description: 'SMTP server host'
+  SMTPPort:
+    Type: String
+    Default: '587'
+    Description: 'SMTP server port'
+  SMTPUsername:
+    Type: String
+    Default: ''
+    Description: 'SMTP server username'
+  SMTPPassword:
+    Type: String
+    Default: ''
+    NoEcho: true
+    Description: 'SMTP server password (stored in Secrets Manager)'
+  SMTPBasicAuth:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: 'Use basic authentication for SMTP server'
+  SMTPStartTLS:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: 'Use STARTTLS for SMTP server'
+  MailFrom:
+    Type: String
+    Default: 'support@example.com'
+    Description: 'Email address to send emails from'
+  AzureSsoEnabled:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: 'Enable Microsoft Entra ID (Azure) SSO'
+  AzureSsoIssuerUri:
+    Type: String
+    Default: ''
+    Description: 'OIDC issuer URI, e.g. https://login.microsoftonline.com/<tenant-id>/v2.0'
+  AzureSsoClientId:
+    Type: String
+    Default: ''
+    Description: 'Azure application (client) ID'
+  AzureSsoClientSecret:
+    Type: String
+    Default: ''
+    NoEcho: true
+    Description: 'Azure application client secret (stored in Secrets Manager)'
+
+Conditions:
+  HasCertificate: !Not [!Equals [!Ref CertificateArn, '']]
+  HasApplicationHostWeb: !Not [!Equals [!Ref ApplicationHostWeb, '']]
+  AzureSso: !Equals [!Ref AzureSsoEnabled, 'true']
+
+Resources:
+
+  # ---------------------------------------------------------------- Network
+
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags: [{ Key: Name, Value: !Ref ApplicationName }]
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.0.0/24
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags: [{ Key: Name, Value: !Sub '${ApplicationName}-public-1' }]
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.1.0/24
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags: [{ Key: Name, Value: !Sub '${ApplicationName}-public-2' }]
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.10.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags: [{ Key: Name, Value: !Sub '${ApplicationName}-private-1' }]
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.11.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags: [{ Key: Name, Value: !Sub '${ApplicationName}-private-2' }]
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicRouteTable
+
+  NatGatewayEIP:
+    Type: AWS::EC2::EIP
+    DependsOn: AttachGateway
+    Properties:
+      Domain: vpc
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatGatewayEIP.AllocationId
+      SubnetId: !Ref PublicSubnet1
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+  PrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet1
+      RouteTableId: !Ref PrivateRouteTable
+  PrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet2
+      RouteTableId: !Ref PrivateRouteTable
+
+  # Secrets Manager and CloudWatch Logs are reached through the NAT gateway. S3 (used by ECR layer
+  # pulls) gets a free gateway endpoint.
+  S3Endpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPC
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.s3'
+      RouteTableIds: [!Ref PrivateRouteTable]
+
+  # -------------------------------------------------------- Security groups
+
+  LoadBalancerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: 'Load balancer: HTTP/HTTPS from the internet'
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIp: 0.0.0.0/0 }
+        - { IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0 }
+  TaskSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: 'ECS tasks: port 8080 from the load balancer'
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
+  DatabaseSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: 'RDS: PostgreSQL from the ECS tasks'
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref TaskSecurityGroup
+
+  # ---------------------------------------------------------------- Secrets
+
+  DBSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${ApplicationName}/database'
+      Description: 'RDS PostgreSQL master credentials'
+      GenerateSecretString:
+        SecretStringTemplate: '{"username": "entropydata"}'
+        GenerateStringKey: password
+        PasswordLength: 32
+        ExcludeCharacters: '"@/\'
+
+  ApplicationSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${ApplicationName}/application'
+      Description: 'SMTP password and SSO client secret'
+      SecretString: !Sub '{"smtpPassword": "${SMTPPassword}", "azureSsoClientSecret": "${AzureSsoClientSecret}"}'
+
+  # --------------------------------------------------------------- Database
+
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: !Sub 'Private subnets for ${ApplicationName}'
+      SubnetIds: [!Ref PrivateSubnet1, !Ref PrivateSubnet2]
+
+  Database:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      DBInstanceIdentifier: !Sub '${ApplicationName}-postgres'
+      DBName: !Ref DBName
+      Engine: postgres
+      EngineVersion: '16'
+      AutoMinorVersionUpgrade: true
+      MasterUsername: !Sub '{{resolve:secretsmanager:${DBSecret}::username}}'
+      MasterUserPassword: !Sub '{{resolve:secretsmanager:${DBSecret}::password}}'
+      DBInstanceClass: !Ref DBInstanceClass
+      AllocatedStorage: !Ref AllocatedStorage
+      MaxAllocatedStorage: !Ref MaxAllocatedStorage
+      StorageType: gp3
+      StorageEncrypted: true
+      MultiAZ: !Ref DBMultiAZ
+      PubliclyAccessible: false
+      VPCSecurityGroups: [!GetAtt DatabaseSecurityGroup.GroupId]
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      BackupRetentionPeriod: 7
+      DeletionProtection: !Ref DBDeletionProtection
+      EnablePerformanceInsights: true
+      CopyTagsToSnapshot: true
+
+  SecretRDSAttachment:
+    Type: AWS::SecretsManager::SecretTargetAttachment
+    Properties:
+      SecretId: !Ref DBSecret
+      TargetId: !Ref Database
+      TargetType: AWS::RDS::DBInstance
+
+  # ---------------------------------------------------------- Load balancer
+
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    DependsOn: AttachGateway
+    Properties:
+      Name: !Ref ApplicationName
+      Scheme: internet-facing
+      Type: application
+      Subnets: [!Ref PublicSubnet1, !Ref PublicSubnet2]
+      SecurityGroups: [!Ref LoadBalancerSecurityGroup]
+      LoadBalancerAttributes:
+        - { Key: idle_timeout.timeout_seconds, Value: '120' }
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Ref ApplicationName
+      VpcId: !Ref VPC
+      Protocol: HTTP
+      Port: 8080
+      TargetType: ip
+      HealthCheckPath: /actuator/health/readiness
+      HealthCheckIntervalSeconds: 15
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher: { HttpCode: '200' }
+      TargetGroupAttributes:
+        - { Key: deregistration_delay.timeout_seconds, Value: '30' }
+        - { Key: stickiness.enabled, Value: 'true' }
+        - { Key: stickiness.type, Value: lb_cookie }
+
+  HttpListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - !If
+          - HasCertificate
+          - Type: redirect
+            RedirectConfig: { Protocol: HTTPS, Port: '443', StatusCode: HTTP_301 }
+          - Type: forward
+            TargetGroupArn: !Ref TargetGroup
+
+  HttpsListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Condition: HasCertificate
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 443
+      Protocol: HTTPS
+      SslPolicy: ELBSecurityPolicy-TLS13-1-2-2021-06
+      Certificates: [{ CertificateArn: !Ref CertificateArn }]
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+  # -------------------------------------------------------------------- ECS
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/ecs/${ApplicationName}'
+      RetentionInDays: 30
+
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Ref ApplicationName
+      ClusterSettings:
+        - { Name: containerInsights, Value: enabled }
+
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: read-secrets
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: [!Ref DBSecret, !Ref ApplicationSecret]
+
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Ref ApplicationName
+      RequiresCompatibilities: [FARGATE]
+      NetworkMode: awsvpc
+      Cpu: !Ref TaskCpu
+      Memory: !Ref TaskMemory
+      RuntimePlatform: { OperatingSystemFamily: LINUX, CpuArchitecture: X86_64 }
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - Name: entropy-data
+          Image: !Ref ImageIdentifier
+          Essential: true
+          PortMappings:
+            - { ContainerPort: 8080, Protocol: tcp }
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+          Environment:
+            - Name: APPLICATION_HOST_WEB
+              Value: !If [HasApplicationHostWeb, !Ref ApplicationHostWeb, !Sub 'http://${LoadBalancer.DNSName}']
+            - Name: APPLICATION_SUPERADMINS
+              Value: !Ref SuperAdmins
+            - Name: APPLICATION_DATACONTRACT_SPECIFICATIONS
+              Value: odcs
+            - Name: APPLICATION_DATAPRODUCT_SPECIFICATIONTYPES
+              Value: odps
+            - Name: SPRING_DATASOURCE_URL
+              Value: !Sub 'jdbc:postgresql://${Database.Endpoint.Address}:${Database.Endpoint.Port}/${DBName}'
+            - Name: SPRING_MAIL_HOST
+              Value: !Ref SMTPHost
+            - Name: SPRING_MAIL_PORT
+              Value: !Ref SMTPPort
+            - Name: SPRING_MAIL_USERNAME
+              Value: !Ref SMTPUsername
+            - Name: SPRING_MAIL_PROPERTIES_MAIL_SMTP_AUTH
+              Value: !Ref SMTPBasicAuth
+            - Name: SPRING_MAIL_PROPERTIES_MAIL_SMTP_STARTTLS_ENABLE
+              Value: !Ref SMTPStartTLS
+            - Name: APPLICATION_MAIL_FROM
+              Value: !Ref MailFrom
+            - !If
+              - AzureSso
+              - { Name: SPRING_SECURITY_OAUTH2_CLIENT_PROVIDER_AZURE_ISSUER_URI, Value: !Ref AzureSsoIssuerUri }
+              - !Ref AWS::NoValue
+            - !If
+              - AzureSso
+              - { Name: SPRING_SECURITY_OAUTH2_CLIENT_REGISTRATION_AZURESSO_CLIENT_ID, Value: !Ref AzureSsoClientId }
+              - !Ref AWS::NoValue
+            - !If
+              - AzureSso
+              - { Name: SPRING_SECURITY_OAUTH2_CLIENT_REGISTRATION_AZURESSO_PROVIDER, Value: azure }
+              - !Ref AWS::NoValue
+            - !If
+              - AzureSso
+              - { Name: SPRING_SECURITY_OAUTH2_CLIENT_REGISTRATION_AZURESSO_AUTHORIZATION_GRANT_TYPE, Value: authorization_code }
+              - !Ref AWS::NoValue
+            - !If
+              - AzureSso
+              - { Name: SPRING_SECURITY_OAUTH2_CLIENT_REGISTRATION_AZURESSO_REDIRECT_URI, Value: '{baseUrl}/{action}/oauth2/code/{registrationId}' }
+              - !Ref AWS::NoValue
+            - !If
+              - AzureSso
+              - { Name: SPRING_SECURITY_OAUTH2_CLIENT_REGISTRATION_AZURESSO_CLIENT_AUTHENTICATION_METHOD, Value: client_secret_basic }
+              - !Ref AWS::NoValue
+            - !If
+              - AzureSso
+              - { Name: SPRING_SECURITY_OAUTH2_CLIENT_REGISTRATION_AZURESSO_SCOPE, Value: 'openid,profile,email' }
+              - !Ref AWS::NoValue
+            - !If
+              - AzureSso
+              - Name: APPLICATION_SSO_AZURE_HOSTS
+                Value: !If
+                  - HasApplicationHostWeb
+                  - !Select [1, !Split ['://', !Ref ApplicationHostWeb]]
+                  - !GetAtt LoadBalancer.DNSName
+              - !Ref AWS::NoValue
+          Secrets:
+            - Name: SPRING_DATASOURCE_USERNAME
+              ValueFrom: !Sub '${DBSecret}:username::'
+            - Name: SPRING_DATASOURCE_PASSWORD
+              ValueFrom: !Sub '${DBSecret}:password::'
+            - Name: SPRING_MAIL_PASSWORD
+              ValueFrom: !Sub '${ApplicationSecret}:smtpPassword::'
+            - !If
+              - AzureSso
+              - Name: SPRING_SECURITY_OAUTH2_CLIENT_REGISTRATION_AZURESSO_CLIENT_SECRET
+                ValueFrom: !Sub '${ApplicationSecret}:azureSsoClientSecret::'
+              - !Ref AWS::NoValue
+
+  Service:
+    Type: AWS::ECS::Service
+    DependsOn: [HttpListener, Database]
+    Properties:
+      ServiceName: !Ref ApplicationName
+      Cluster: !Ref Cluster
+      LaunchType: FARGATE
+      TaskDefinition: !Ref TaskDefinition
+      DesiredCount: !Ref DesiredCount
+      HealthCheckGracePeriodSeconds: 300
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 100
+        MaximumPercent: 200
+        DeploymentCircuitBreaker: { Enable: true, Rollback: true }
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          Subnets: [!Ref PrivateSubnet1, !Ref PrivateSubnet2]
+          SecurityGroups: [!Ref TaskSecurityGroup]
+      LoadBalancers:
+        - ContainerName: entropy-data
+          ContainerPort: 8080
+          TargetGroupArn: !Ref TargetGroup
+
+  ScalableTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    Properties:
+      ServiceNamespace: ecs
+      ScalableDimension: ecs:service:DesiredCount
+      ResourceId: !Sub 'service/${Cluster}/${Service.Name}'
+      MinCapacity: !Ref DesiredCount
+      MaxCapacity: !Ref MaxCount
+      RoleARN: !Sub 'arn:aws:iam::${AWS::AccountId}:role/aws-service-role/ecs.application-autoscaling.amazonaws.com/AWSServiceRoleForApplicationAutoScaling_ECSService'
+
+  CpuScalingPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: !Sub '${ApplicationName}-cpu'
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref ScalableTarget
+      TargetTrackingScalingPolicyConfiguration:
+        PredefinedMetricSpecification: { PredefinedMetricType: ECSServiceAverageCPUUtilization }
+        TargetValue: 60
+        ScaleInCooldown: 300
+        ScaleOutCooldown: 60
+
+Outputs:
+  LoadBalancerDNSName:
+    Description: 'DNS name of the load balancer. Point your domain (CNAME) here.'
+    Value: !GetAtt LoadBalancer.DNSName
+  ApplicationURL:
+    Description: 'URL of the application'
+    Value: !If [HasApplicationHostWeb, !Ref ApplicationHostWeb, !Sub 'http://${LoadBalancer.DNSName}']
+  DatabaseEndpoint:
+    Description: 'RDS endpoint'
+    Value: !GetAtt Database.Endpoint.Address
+  DBSecretArn:
+    Description: 'Secrets Manager secret with the database credentials'
+    Value: !Ref DBSecret
+  ClusterName:
+    Value: !Ref Cluster
+  ServiceName:
+    Value: !GetAtt Service.Name
+  LogGroup:
+    Value: !Ref LogGroup
