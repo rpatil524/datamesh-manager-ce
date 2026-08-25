@@ -23,7 +23,7 @@ aws cloudformation deploy \
   --template-file ./template-ecs.yaml \
   --capabilities CAPABILITY_IAM \
   --parameter-overrides \
-    ImageIdentifier=public.ecr.aws/s4e5k7s9/entropy-data-ce:latest \
+    ImageIdentifier=public.ecr.aws/s4e5k7s9/entropy-data:latest \
     ApplicationHostWeb=https://entropy.example.com \
     CertificateArn=arn:aws:acm:eu-central-1:123456789012:certificate/... \
     SuperAdmins=admin@example.com \
@@ -43,7 +43,7 @@ Additional [configuration options](https://docs.entropy-data.com/configuration) 
 
 ## App Runner (`template.yaml`)
 
-It uses the Docker Image hosted on AWS Public ECR: `public.ecr.aws/s4e5k7s9/entropy-data-ce:latest` (see more on https://gallery.ecr.aws/s4e5k7s9/entropy-data-ce).
+It uses the Docker Image hosted on AWS Public ECR: `public.ecr.aws/s4e5k7s9/entropy-data:latest` (see more on https://gallery.ecr.aws/s4e5k7s9/entropy-data).
 
 [Quick-Create Link](https://eu-central-1.console.aws.amazon.com/cloudformation/home?region=eu-central-1#/stacks/create/review?templateURL=https://entropy-data-ce.s3.us-east-1.amazonaws.com/template.yaml)
 
@@ -57,7 +57,7 @@ Using a public image from Docker Hub in AWS AppRunner comes with many constraint
 The alternative requires a private ECR repository, which either gets the image pushed or configures a pull-through cache.
 The pull-through cache always requires credentials configured in the AWS Secrets Manager, even for public docker images on Docker Hub.
 
-Because of that, the CloudFormation template uses `public.ecr.aws/s4e5k7s9/entropy-data-ce:latest` from ECR Public. But be aware that it does not automatically upgrade to newer versions of the Entropy Data!
+Because of that, the CloudFormation template uses `public.ecr.aws/s4e5k7s9/entropy-data:latest` from ECR Public. But be aware that it does not automatically upgrade to newer versions of the Entropy Data!
 
 ### Running the CloudFormation Template from CLI
 
@@ -66,7 +66,7 @@ aws cloudformation create-stack \
   --stack-name entropy-data \
   --template-body file://./template.yaml \
   --parameters \
-    ParameterKey=ImageIdentifier,ParameterValue=public.ecr.aws/s4e5k7s9/entropy-data-ce:latest \
+    ParameterKey=ImageIdentifier,ParameterValue=public.ecr.aws/s4e5k7s9/entropy-data:latest \
     ParameterKey=DBInstanceIdentifier,ParameterValue=entropy-data-postgres \
     ParameterKey=DBName,ParameterValue=postgres \
     ParameterKey=SuperAdmins,ParameterValue= \

@@ -4,7 +4,7 @@ Description: 'CloudFormation template to provision the Entropy Data on AWS App R
 Parameters:
   ImageIdentifier:
     Type: String
-    Default: 'public.ecr.aws/s4e5k7s9/entropy-data-ce:latest'
+    Default: 'public.ecr.aws/s4e5k7s9/entropy-data:latest'
     Description: 'Container image identifier for the App Runner service'
   DBInstanceIdentifier:
     Type: String

@@ -23,8 +23,8 @@ Parameters:
     AllowedPattern: '^[a-z][a-z0-9-]{1,30}$'
   ImageIdentifier:
     Type: String
-    Default: 'public.ecr.aws/s4e5k7s9/entropy-data-ce:latest'
-    Description: 'Container image. Docker Hub images (entropydata/entropy-data-ce, or entropydata/entropy-data for the enterprise version) work as well.'
+    Default: 'public.ecr.aws/s4e5k7s9/entropy-data:latest'
+    Description: 'Container image. Docker Hub images (entropydata/entropy-data) work as well. Use entropy-data-ce for the community edition.'
   ApplicationHostWeb:
     Type: String
     Default: ''
