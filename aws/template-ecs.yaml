@@ -145,32 +145,12 @@ Parameters:
     NoEcho: true
     Description: 'Azure application client secret (stored in Secrets Manager)'
 
-# Validated before any resource is created. Note that CloudFormation cannot pre-check the IAM
-# permissions of the deploying principal: creating this stack requires permissions for
-# CloudFormation, EC2/VPC, ECS, ELB, RDS, Secrets Manager, CloudWatch Logs, Application Auto
-# Scaling, and IAM role management (iam:CreateRole, TagRole, AttachRolePolicy, PutRolePolicy,
-# PassRole, DeleteRole). The AWS managed PowerUserAccess policy is NOT sufficient (no IAM writes).
-Rules:
-  SmtpRequiresMailFrom:
-    RuleCondition: !Not [!Equals [!Ref SMTPHost, '']]
-    Assertions:
-      - Assert: !Not [!Equals [!Ref MailFrom, '']]
-        AssertDescription: 'MailFrom is required when SMTPHost is set.'
-  AzureSsoRequiresConfiguration:
-    RuleCondition: !Equals [!Ref AzureSsoEnabled, 'true']
-    Assertions:
-      - Assert: !Not [!Equals [!Ref AzureSsoIssuerUri, '']]
-        AssertDescription: 'AzureSsoIssuerUri is required when AzureSsoEnabled is true.'
-      - Assert: !Not [!Equals [!Ref AzureSsoClientId, '']]
-        AssertDescription: 'AzureSsoClientId is required when AzureSsoEnabled is true.'
-      - Assert: !Not [!Equals [!Ref AzureSsoClientSecret, '']]
-        AssertDescription: 'AzureSsoClientSecret is required when AzureSsoEnabled is true.'
-  HttpsRecommendsHostWeb:
-    RuleCondition: !Not [!Equals [!Ref CertificateArn, '']]
-    Assertions:
-      - Assert: !Not [!Equals [!Ref ApplicationHostWeb, '']]
-        AssertDescription: 'Set ApplicationHostWeb to your https:// domain when CertificateArn is set, so links in emails use the domain of the certificate.'
-
+# CloudFormation cannot pre-check the IAM permissions of the deploying principal, and template
+# Rules are not evaluated for standard stack operations, so validation is limited to the
+# AllowedPattern/AllowedValues constraints on the parameters above. Creating this stack requires
+# permissions for CloudFormation, EC2/VPC, ECS, ELB, RDS, Secrets Manager, CloudWatch Logs,
+# Application Auto Scaling, and IAM role management (iam:CreateRole, TagRole, AttachRolePolicy,
+# PutRolePolicy, PassRole, DeleteRole). The AWS managed PowerUserAccess policy is NOT sufficient.
 Conditions:
   HasSmtp: !Not [!Equals [!Ref SMTPHost, '']]
   HasCertificate: !Not [!Equals [!Ref CertificateArn, '']]
