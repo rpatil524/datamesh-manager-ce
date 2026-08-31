@@ -28,6 +28,8 @@ Parameters:
   ApplicationHostWeb:
     Type: String
     Default: ''
+    AllowedPattern: '^(https?://.+)?$'
+    ConstraintDescription: 'must be empty or a full URL starting with http:// or https://'
     Description: 'Public URL of the application, e.g. https://entropy.example.com. Used in emails to build links. Leave empty to use the load balancer DNS name over HTTP.'
   SuperAdmins:
     Type: String
@@ -56,6 +58,8 @@ Parameters:
   CertificateArn:
     Type: String
     Default: ''
+    AllowedPattern: '^(arn:aws:acm:[a-z0-9-]+:[0-9]{12}:certificate/.+)?$'
+    ConstraintDescription: 'must be empty or an ACM certificate ARN in the same region as the stack'
     Description: 'ACM certificate ARN for HTTPS on the load balancer. Leave empty for HTTP only (not recommended for production).'
   DBInstanceClass:
     Type: String
@@ -92,6 +96,8 @@ Parameters:
   SMTPPort:
     Type: String
     Default: '587'
+    AllowedPattern: '^[0-9]{1,5}$'
+    ConstraintDescription: 'must be a port number'
     Description: 'SMTP server port'
   SMTPUsername:
     Type: String
@@ -115,7 +121,9 @@ Parameters:
   MailFrom:
     Type: String
     Default: ''
-    Description: 'Email address to send emails from'
+    AllowedPattern: '^([^@ ]+@[^@ ]+[.][^@ ]+)?$'
+    ConstraintDescription: 'must be empty or an email address'
+    Description: 'Email address to send emails from. Required when SMTPHost is set.'
   AzureSsoEnabled:
     Type: String
     Default: 'false'
@@ -124,6 +132,8 @@ Parameters:
   AzureSsoIssuerUri:
     Type: String
     Default: ''
+    AllowedPattern: '^(https://.+)?$'
+    ConstraintDescription: 'must be empty or an https:// URI'
     Description: 'OIDC issuer URI, e.g. https://login.microsoftonline.com/<tenant-id>/v2.0'
   AzureSsoClientId:
     Type: String
@@ -134,6 +144,32 @@ Parameters:
     Default: ''
     NoEcho: true
     Description: 'Azure application client secret (stored in Secrets Manager)'
+
+# Validated before any resource is created. Note that CloudFormation cannot pre-check the IAM
+# permissions of the deploying principal: creating this stack requires permissions for
+# CloudFormation, EC2/VPC, ECS, ELB, RDS, Secrets Manager, CloudWatch Logs, Application Auto
+# Scaling, and IAM role management (iam:CreateRole, TagRole, AttachRolePolicy, PutRolePolicy,
+# PassRole, DeleteRole). The AWS managed PowerUserAccess policy is NOT sufficient (no IAM writes).
+Rules:
+  SmtpRequiresMailFrom:
+    RuleCondition: !Not [!Equals [!Ref SMTPHost, '']]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref MailFrom, '']]
+        AssertDescription: 'MailFrom is required when SMTPHost is set.'
+  AzureSsoRequiresConfiguration:
+    RuleCondition: !Equals [!Ref AzureSsoEnabled, 'true']
+    Assertions:
+      - Assert: !Not [!Equals [!Ref AzureSsoIssuerUri, '']]
+        AssertDescription: 'AzureSsoIssuerUri is required when AzureSsoEnabled is true.'
+      - Assert: !Not [!Equals [!Ref AzureSsoClientId, '']]
+        AssertDescription: 'AzureSsoClientId is required when AzureSsoEnabled is true.'
+      - Assert: !Not [!Equals [!Ref AzureSsoClientSecret, '']]
+        AssertDescription: 'AzureSsoClientSecret is required when AzureSsoEnabled is true.'
+  HttpsRecommendsHostWeb:
+    RuleCondition: !Not [!Equals [!Ref CertificateArn, '']]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref ApplicationHostWeb, '']]
+        AssertDescription: 'Set ApplicationHostWeb to your https:// domain when CertificateArn is set, so links in emails use the domain of the certificate.'
 
 Conditions:
   HasSmtp: !Not [!Equals [!Ref SMTPHost, '']]
