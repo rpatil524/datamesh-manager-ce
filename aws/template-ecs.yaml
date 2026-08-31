@@ -87,8 +87,8 @@ Parameters:
     Description: 'Protect the database from deletion. Set to false before deleting the stack.'
   SMTPHost:
     Type: String
-    Default: 'smtp.example.com'
-    Description: 'SMTP server host'
+    Default: ''
+    Description: 'SMTP server host. Leave empty to run without transactional emails (account verification, notifications).'
   SMTPPort:
     Type: String
     Default: '587'
@@ -114,7 +114,7 @@ Parameters:
     Description: 'Use STARTTLS for SMTP server'
   MailFrom:
     Type: String
-    Default: 'support@example.com'
+    Default: ''
     Description: 'Email address to send emails from'
   AzureSsoEnabled:
     Type: String
@@ -136,6 +136,7 @@ Parameters:
     Description: 'Azure application client secret (stored in Secrets Manager)'
 
 Conditions:
+  HasSmtp: !Not [!Equals [!Ref SMTPHost, '']]
   HasCertificate: !Not [!Equals [!Ref CertificateArn, '']]
   HasApplicationHostWeb: !Not [!Equals [!Ref ApplicationHostWeb, '']]
   AzureSso: !Equals [!Ref AzureSsoEnabled, 'true']
@@ -484,18 +485,30 @@ Resources:
               Value: odps
             - Name: SPRING_DATASOURCE_URL
               Value: !Sub 'jdbc:postgresql://${Database.Endpoint.Address}:${Database.Endpoint.Port}/${DBName}'
-            - Name: SPRING_MAIL_HOST
-              Value: !Ref SMTPHost
-            - Name: SPRING_MAIL_PORT
-              Value: !Ref SMTPPort
-            - Name: SPRING_MAIL_USERNAME
-              Value: !Ref SMTPUsername
-            - Name: SPRING_MAIL_PROPERTIES_MAIL_SMTP_AUTH
-              Value: !Ref SMTPBasicAuth
-            - Name: SPRING_MAIL_PROPERTIES_MAIL_SMTP_STARTTLS_ENABLE
-              Value: !Ref SMTPStartTLS
-            - Name: APPLICATION_MAIL_FROM
-              Value: !Ref MailFrom
+            - !If
+              - HasSmtp
+              - { Name: SPRING_MAIL_HOST, Value: !Ref SMTPHost }
+              - !Ref AWS::NoValue
+            - !If
+              - HasSmtp
+              - { Name: SPRING_MAIL_PORT, Value: !Ref SMTPPort }
+              - !Ref AWS::NoValue
+            - !If
+              - HasSmtp
+              - { Name: SPRING_MAIL_USERNAME, Value: !Ref SMTPUsername }
+              - !Ref AWS::NoValue
+            - !If
+              - HasSmtp
+              - { Name: SPRING_MAIL_PROPERTIES_MAIL_SMTP_AUTH, Value: !Ref SMTPBasicAuth }
+              - !Ref AWS::NoValue
+            - !If
+              - HasSmtp
+              - { Name: SPRING_MAIL_PROPERTIES_MAIL_SMTP_STARTTLS_ENABLE, Value: !Ref SMTPStartTLS }
+              - !Ref AWS::NoValue
+            - !If
+              - HasSmtp
+              - { Name: APPLICATION_MAIL_FROM, Value: !Ref MailFrom }
+              - !Ref AWS::NoValue
             - !If
               - AzureSso
               - { Name: SPRING_SECURITY_OAUTH2_CLIENT_PROVIDER_AZURE_ISSUER_URI, Value: !Ref AzureSsoIssuerUri }
@@ -537,8 +550,11 @@ Resources:
               ValueFrom: !Sub '${DBSecret}:username::'
             - Name: SPRING_DATASOURCE_PASSWORD
               ValueFrom: !Sub '${DBSecret}:password::'
-            - Name: SPRING_MAIL_PASSWORD
-              ValueFrom: !Sub '${ApplicationSecret}:smtpPassword::'
+            - !If
+              - HasSmtp
+              - Name: SPRING_MAIL_PASSWORD
+                ValueFrom: !Sub '${ApplicationSecret}:smtpPassword::'
+              - !Ref AWS::NoValue
             - !If
               - AzureSso
               - Name: SPRING_SECURITY_OAUTH2_CLIENT_REGISTRATION_AZURESSO_CLIENT_SECRET

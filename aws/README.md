@@ -35,7 +35,7 @@ aws cloudformation deploy \
   --region eu-central-1
 ```
 
-Leave `ApplicationHostWeb` and `CertificateArn` empty to run on the load balancer DNS name over plain HTTP (for testing). To use a custom domain, request an ACM certificate in the stack's region, create a CNAME from your domain to the `LoadBalancerDNSName` output, and set both parameters.
+SMTP parameters are optional; with `SMTPHost` empty the application runs without transactional emails. Leave `ApplicationHostWeb` and `CertificateArn` empty to run on the load balancer DNS name over plain HTTP (for testing). To use a custom domain, request an ACM certificate in the stack's region, create a CNAME from your domain to the `LoadBalancerDNSName` output, and set both parameters.
 
 To upgrade, change `ImageIdentifier` to the new tag and deploy again; ECS rolls out the new task and rolls back if it does not become healthy. Before deleting the stack, set `DBDeletionProtection=false`; the database is snapshotted on deletion.
 
