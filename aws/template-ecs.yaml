@@ -50,9 +50,9 @@ Parameters:
     Description: 'Minimum number of running tasks'
   MaxCount:
     Type: Number
-    Default: 4
+    Default: 1
     MinValue: 1
-    Description: 'Maximum number of tasks for CPU based autoscaling'
+    Description: 'Maximum number of tasks for CPU based autoscaling. 1 disables scale-out.'
   CertificateArn:
     Type: String
     Default: ''
