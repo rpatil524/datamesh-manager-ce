@@ -70,8 +70,8 @@ Configure an external database and mail server for production use. Find all envi
 
 [![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fentropy-data%2Fentropy-data-ce%2Fmain%2Fazure%2Fentropy-data-ce.json)
 
-Use the Azure Resource Manager [template](azure/entropy-data-ce.json) to deploy Entropy Data as WebApp, together with a Postgres database in a virtual network.
-You need to provide SMTP server configuration.
+Use the Azure Resource Manager [template](azure/entropy-data-ce.json) to deploy Entropy Data as Container App, together with a Postgres database in a virtual network.
+SMTP server configuration is optional, see the [Azure README](azure/) for details.
 
 ## Deploy on AWS
 

@@ -1,21 +1,46 @@
 @description('Location for all resources.')
 param location string = resourceGroup().location
 
-@description('The name of the web app. This will also be used for the default domain name \${webAppName}.azurewebsites.net, so it must be unique.')
-param webAppName string = 'entropydata-${resourceGroup().name}'
+@minLength(2)
+@maxLength(32)
+@description('The name of the Container App. Lowercase letters, numbers and hyphens only. It is part of the default domain name https://\${containerAppName}.<random>.<region>.azurecontainerapps.io')
+param containerAppName string = 'entropy-data'
 
-@description('SMTP server host. You can use SendGrid or any other SMTP server.')
-param smtpHost string = 'smtp.sendgrid.net'
+@description('The Docker container image.')
+param containerImageUrl string = 'docker.io/entropydata/entropy-data-ce:latest'
+
+@description('CPU cores for the container. Together with the memory it must be one of the allowed combinations of the Consumption workload profile, e.g. 0.5/1Gi, 1/2Gi, 2/4Gi, 4/8Gi.')
+param containerCpu string = '1'
+
+@description('Memory for the container, e.g. 2Gi.')
+param containerMemory string = '2Gi'
+
+@minValue(1)
+@description('Minimum number of running replicas.')
+param minReplicas int = 1
+
+@minValue(1)
+@description('Maximum number of running replicas.')
+param maxReplicas int = 1
+
+@description('Public URL of the application, e.g. https://entropy.example.com. Used in emails to build links. Leave empty to use the default domain of the Container App.')
+param applicationHostWeb string = ''
+
+@description('Comma-separated email addresses of super admins. Can be changed later.')
+param superAdmins string = ''
+
+@description('SMTP server host. You can use Azure Communication Services, SendGrid or any other SMTP server. Leave empty to run without transactional emails (account verification, notifications).')
+param smtpHost string = ''
 
 @description('SMTP server port')
 param smtpPort string = '587'
 
 @description('Login user of the SMTP server')
-param smtpUsername string = 'apikey'
+param smtpUsername string = ''
 
 @description('Login password of the SMTP server. If you use SendGrid, this is your API Key.')
 @secure()
-param smtpPassword string
+param smtpPassword string = ''
 
 @description('Use basic authentication for SMTP')
 param smtpBasicAuth bool = true
@@ -23,16 +48,8 @@ param smtpBasicAuth bool = true
 @description('Ensure that TLS is used')
 param smtpStarttls bool = true
 
-@minLength(3)
-@description('The sender email address for Entropy Data emails. For many email providers, such as SendGrid, that must be a verified sender email address.')
-param mailFrom string = 'hello@entropy-data.com'
-
-@description('The Docker container image URL.')
-param containerImageUrl string = 'entropydata/entropy-data-ce:latest'
-
-@description('App Service plan pricing tier. Should have 4 GB.')
-// P1v2 = 1vCPU, 3.5 GB, $83/month
-param appServicePlanSku string = 'P1v2'
+@description('The sender email address for Entropy Data emails. For many email providers, such as SendGrid, that must be a verified sender email address. Required when smtpHost is set.')
+param mailFrom string = ''
 
 @description('Postgres compute tier size')
 // $160/month
@@ -41,7 +58,7 @@ param postgresComputeTierSizeSku string = 'Standard_D2s_v3'
 @description('Postgres storge size in GB. Min 128 GB.')
 param postgresStorageSizeGB int = 128
 
-@description('The name of the PostgreSQL server.')
+@description('The name of the PostgreSQL server. Must be globally unique.')
 param postgresServerName string = 'entropydata-postgres-${resourceGroup().name}'
 
 @description('The administrator username of the PostgreSQL server.')
@@ -60,124 +77,200 @@ param vnetName string = 'entropydata-vnet'
 @description('The address prefix for the virtual network.')
 param vnetAddressPrefix string = '10.0.0.0/16'
 
-@description('The subnet name.')
-param webappSubnetName string = 'webapp-subnet'
+@description('The name of the Container Apps infrastructure subnet.')
+param containerAppsSubnetName string = 'containerapps-subnet'
 
-@description('The address prefix for the subnet.')
-param webappSubnetAddressPrefix string = '10.0.1.0/24'
+@description('The address prefix for the Container Apps infrastructure subnet. Min /27.')
+param containerAppsSubnetAddressPrefix string = '10.0.0.0/23'
 
-@description('The address prefix for the PostgreSQL subnet.')
+@description('The name of the PostgreSQL subnet.')
 param postgresSubnetName string = 'postgres-subnet'
 
 @description('The address prefix for the PostgreSQL subnet.')
 param postgresSubnetAddressPrefix string = '10.0.2.0/24'
 
+@description('Retention of container logs in Log Analytics in days.')
+param logRetentionInDays int = 30
 
-resource appServicePlan 'Microsoft.Web/serverfarms@2020-12-01' = {
-  name: '${webAppName}-plan'
-  location: location
-  sku: {
-    name: appServicePlanSku
+
+var hasSmtp = !empty(smtpHost)
+var hasSmtpPassword = hasSmtp && !empty(smtpPassword)
+var postgresPasswordSecretName = 'postgres-password'
+var smtpPasswordSecretName = 'smtp-password'
+
+var baseEnv = [
+  {
+    name: 'APPLICATION_HOST_WEB'
+    value: empty(applicationHostWeb) ? 'https://${containerAppName}.${containerAppsEnvironment.properties.defaultDomain}' : applicationHostWeb
   }
+  {
+    name: 'APPLICATION_SUPERADMINS'
+    value: superAdmins
+  }
+  {
+    name: 'SPRING_DATASOURCE_URL'
+    value: 'jdbc:postgresql://${postgres.properties.fullyQualifiedDomainName}:5432/${databaseName}'
+  }
+  {
+    name: 'SPRING_DATASOURCE_USERNAME'
+    value: postgresAdminUsername
+  }
+  {
+    name: 'SPRING_DATASOURCE_PASSWORD'
+    secretRef: postgresPasswordSecretName
+  }
+]
+
+var smtpEnv = [
+  {
+    name: 'SPRING_MAIL_HOST'
+    value: smtpHost
+  }
+  {
+    name: 'SPRING_MAIL_PORT'
+    value: smtpPort
+  }
+  {
+    name: 'SPRING_MAIL_USERNAME'
+    value: smtpUsername
+  }
+  {
+    name: 'SPRING_MAIL_PROPERTIES_MAIL_SMTP_AUTH'
+    value: toLower(string(smtpBasicAuth))
+  }
+  {
+    name: 'SPRING_MAIL_PROPERTIES_MAIL_SMTP_STARTTLS_ENABLE'
+    value: toLower(string(smtpStarttls))
+  }
+  {
+    name: 'APPLICATION_MAIL_FROM'
+    value: mailFrom
+  }
+]
+
+var smtpPasswordEnv = [
+  {
+    name: 'SPRING_MAIL_PASSWORD'
+    secretRef: smtpPasswordSecretName
+  }
+]
+
+
+resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
+  name: '${containerAppName}-logs'
+  location: location
   properties: {
-    reserved: true
+    sku: {
+      name: 'PerGB2018'
+    }
+    retentionInDays: logRetentionInDays
   }
 }
 
-resource webApp 'Microsoft.Web/sites@2023-12-01' = {
-  name: webAppName
+resource containerAppsEnvironment 'Microsoft.App/managedEnvironments@2025-07-01' = {
+  name: '${containerAppName}-env'
   location: location
-  kind: 'app,linux,docker'
   properties: {
-    serverFarmId: appServicePlan.id 
-    // AutoGeneratedDomainNameLabelScope: 'TenantReuse'
-    siteConfig: {
-      appSettings: [
+    appLogsConfiguration: {
+      destination: 'log-analytics'
+      logAnalyticsConfiguration: {
+        customerId: logAnalytics.properties.customerId
+        sharedKey: logAnalytics.listKeys().primarySharedKey
+      }
+    }
+    vnetConfiguration: {
+      internal: false
+      infrastructureSubnetId: '${vnet.id}/subnets/${containerAppsSubnetName}'
+    }
+    workloadProfiles: [
+      {
+        name: 'Consumption'
+        workloadProfileType: 'Consumption'
+      }
+    ]
+    zoneRedundant: false
+  }
+}
+
+resource containerApp 'Microsoft.App/containerApps@2025-07-01' = {
+  name: containerAppName
+  location: location
+  properties: {
+    managedEnvironmentId: containerAppsEnvironment.id
+    workloadProfileName: 'Consumption'
+    configuration: {
+      activeRevisionsMode: 'Single'
+      ingress: {
+        external: true
+        targetPort: 8080
+        transport: 'auto'
+        allowInsecure: false
+      }
+      secrets: concat(
+        [
+          {
+            name: postgresPasswordSecretName
+            value: postgresAdminPassword
+          }
+        ],
+        hasSmtpPassword ? [
+          {
+            name: smtpPasswordSecretName
+            value: smtpPassword
+          }
+        ] : []
+      )
+    }
+    template: {
+      containers: [
         {
-          name: 'WEBSITES_ENABLE_APP_SERVICE_STORAGE'
-          value: 'false'
-        }
-        {
-          name: 'DOCKER_REGISTRY_SERVER_URL'
-          value: 'https://index.docker.io'
-        }
-        {
-          name: 'POSTGRES_HOST'
-          value: '${postgres.name}.postgres.database.azure.com'
-        }
-        {
-          name: 'POSTGRES_DB'
-          value: databaseName
-        }
-        {
-          name: 'POSTGRES_USER'
-          value: '${postgresAdminUsername}@${postgres.name}'
-        }
-        {
-          name: 'POSTGRES_PASSWORD'
-          value: postgresAdminPassword
-        }
-        {
-          name: 'WEBSITES_PORT'
-          value: '8080'
-        }
-        {
-          name: 'APPLICATION_HOST_WEB'
-          value: 'https://\${WEBSITE_HOSTNAME}'
-        }
-        {
-          name: 'SPRING_DATASOURCE_URL'
-          value: 'jdbc:postgresql://${postgres.name}.postgres.database.azure.com:5432/${databaseName}'
-        }
-        {
-          name: 'SPRING_DATASOURCE_USERNAME'
-          value: postgresAdminUsername
-        }
-        {
-          name: 'SPRING_DATASOURCE_PASSWORD'
-          value: postgresAdminPassword
-        }
-        {
-          name: 'SPRING_MAIL_HOST'
-          value: smtpHost
-        }
-        {
-          name: 'SPRING_MAIL_PORT'
-          value: smtpPort
-        }
-        {
-          name: 'SPRING_MAIL_USERNAME'
-          value: smtpUsername
-        }
-        {
-          name: 'SPRING_MAIL_PASSWORD'
-          value: smtpPassword
-        }
-        {
-          name: 'SPRING_MAIL_PROPERTIES_MAIL_SMTP_AUTH'
-          value: toLower(string(smtpBasicAuth))
-        }
-        {
-          name: 'SPRING_MAIL_PROPERTIES_MAIL_SMTP_STARTTLS_ENABLE'
-          value: toLower(string(smtpStarttls))
-        }
-        {
-          name: 'APPLICATION_MAIL_FROM'
-          value: mailFrom
+          name: 'entropy-data'
+          image: containerImageUrl
+          resources: {
+            cpu: json(containerCpu)
+            memory: containerMemory
+          }
+          env: concat(baseEnv, hasSmtp ? smtpEnv : [], hasSmtpPassword ? smtpPasswordEnv : [])
+          probes: [
+            {
+              type: 'Startup'
+              httpGet: {
+                path: '/actuator/health/readiness'
+                port: 8080
+              }
+              periodSeconds: 10
+              failureThreshold: 30
+            }
+            {
+              type: 'Readiness'
+              httpGet: {
+                path: '/actuator/health/readiness'
+                port: 8080
+              }
+              periodSeconds: 10
+              failureThreshold: 3
+            }
+            {
+              type: 'Liveness'
+              httpGet: {
+                path: '/actuator/health/liveness'
+                port: 8080
+              }
+              periodSeconds: 30
+              failureThreshold: 3
+            }
+          ]
         }
       ]
-      linuxFxVersion: 'DOCKER|index.docker.io/${containerImageUrl}'
-      alwaysOn: true
-      vnetRouteAllEnabled: true
-      ftpsState: 'FtpsOnly'
-      appCommandLine: ''
+      scale: {
+        minReplicas: minReplicas
+        maxReplicas: maxReplicas
+      }
     }
-    virtualNetworkSubnetId: '${vnet.id}/subnets/${webappSubnetName}'
-    httpsOnly: true
   }
 }
 
-resource postgres 'Microsoft.DBforPostgreSQL/flexibleServers@2023-12-01-preview' = {
+resource postgres 'Microsoft.DBforPostgreSQL/flexibleServers@2024-08-01' = {
   name: postgresServerName
   location: location
   sku: {
@@ -186,12 +279,7 @@ resource postgres 'Microsoft.DBforPostgreSQL/flexibleServers@2023-12-01-preview'
   }
   properties: {
     version: '16'
-    replica: {
-      role: 'Primary'
-    }
     storage: {
-      iops: 500
-      tier: 'P10'
       storageSizeGB: postgresStorageSizeGB
       autoGrow: 'Enabled'
     }
@@ -209,7 +297,6 @@ resource postgres 'Microsoft.DBforPostgreSQL/flexibleServers@2023-12-01-preview'
     }
     administratorLogin: postgresAdminUsername
     administratorLoginPassword: postgresAdminPassword
-    availabilityZone: '3'
     backup: {
       backupRetentionDays: 7
       geoRedundantBackup: 'Disabled'
@@ -223,11 +310,13 @@ resource postgres 'Microsoft.DBforPostgreSQL/flexibleServers@2023-12-01-preview'
       startHour: 0
       startMinute: 0
     }
-    replicationRole: 'Primary'
   }
+  dependsOn: [
+    privateDnsZones_privatelink_postgres_dblink
+  ]
 }
 
-resource postgres_extensions 'Microsoft.DBforPostgreSQL/flexibleServers/configurations@2023-12-01-preview' = {
+resource postgres_extensions 'Microsoft.DBforPostgreSQL/flexibleServers/configurations@2024-08-01' = {
   parent: postgres
   name: 'azure.extensions'
   properties: {
@@ -236,7 +325,7 @@ resource postgres_extensions 'Microsoft.DBforPostgreSQL/flexibleServers/configur
   }
 }
 
-resource vnet 'Microsoft.Network/virtualNetworks@2020-06-01' = {
+resource vnet 'Microsoft.Network/virtualNetworks@2024-05-01' = {
   name: vnetName
   location: location
   properties: {
@@ -247,14 +336,14 @@ resource vnet 'Microsoft.Network/virtualNetworks@2020-06-01' = {
     }
     subnets: [
       {
-        name: webappSubnetName
+        name: containerAppsSubnetName
         properties: {
-          addressPrefix: webappSubnetAddressPrefix
+          addressPrefix: containerAppsSubnetAddressPrefix
           delegations: [
             {
-              name: 'dlg-appServices'
+              name: 'dlg-containerapps'
               properties: {
-                serviceName: 'Microsoft.Web/serverfarms'
+                serviceName: 'Microsoft.App/environments'
               }
             }
           ]
@@ -272,27 +361,19 @@ resource vnet 'Microsoft.Network/virtualNetworks@2020-06-01' = {
               }
             }
           ]
-        }        
+        }
       }
     ]
   }
 }
-resource webAppVnetIntegration 'Microsoft.Web/sites/virtualNetworkConnections@2023-12-01' = {
-  name: '${webAppName}vnet'
-  properties: {
-    vnetResourceId: '${vnet.id}/subnets/${webappSubnetName}'
-    isSwift: true
-  }
-  parent: webApp
-}
 
-resource privateDnsZones_privatelink_postgres 'Microsoft.Network/privateDnsZones@2020-06-01' = {
+resource privateDnsZones_privatelink_postgres 'Microsoft.Network/privateDnsZones@2024-06-01' = {
   name: 'privatelink.postgres.database.azure.com'
   location: 'global'
   properties: {}
 }
 
-resource privateDnsZones_privatelink_postgres_dblink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = {
+resource privateDnsZones_privatelink_postgres_dblink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01' = {
   parent: privateDnsZones_privatelink_postgres
   name: '${privateDnsZones_privatelink_postgres.name}-dblink'
   location: 'global'
@@ -305,79 +386,6 @@ resource privateDnsZones_privatelink_postgres_dblink 'Microsoft.Network/privateD
 }
 
 
-
-
-// // Email Communication Service
-// resource emailService 'Microsoft.Communication/emailServices@2023-03-31' = {
-//   name: 'entropydata-es'
-//   location: 'global'
-//   properties: {
-//     dataLocation: 'Europe'
-//   }
-// }
-
-// // Email Communication Services Domain (Azure Managed)
-// resource emailServiceAzureDomain 'Microsoft.Communication/emailServices/domains@2023-03-31' = {
-//   parent: emailService
-//   name: 'AzureManagedDomain'
-//   location: 'global'
-//   properties: {
-//     domainManagement: 'AzureManaged'
-//     userEngagementTracking: 'Disabled'
-//   }
-// }
-
-// // SenderUsername (Azure Managed Domain)
-// resource senderUserNameAzureDomain 'Microsoft.Communication/emailServices/domains/senderUsernames@2023-03-31' = {
-//   parent: emailServiceAzureDomain
-//   name: 'donotreply'
-//   properties: {
-//     username: 'DoNotReply'
-//     displayName: 'DoNotReply'
-//   }
-// }
-
-// // Communication Service
-// resource communcationService 'Microsoft.Communication/communicationServices@2023-03-31' = {
-//   name: 'entropydata-cs'
-//   location: 'global'
-//   properties: {
-//     dataLocation: 'Europe'
-//     linkedDomains: [
-//       emailServiceAzureDomain.id
-//     ]
-//   }
-// }
-
-// @description('A role to send emails')
-// resource symbolicname 'Microsoft.Authorization/roleDefinitions@2022-05-01-preview' = {
-//   name: 'ACS Email Write'
-//   properties: {
-//     assignableScopes: [
-//       communcationService.id
-//     ]
-//     permissions: [
-//       {
-//         actions: [
-//           'Microsoft.Communication/CommunicationServices/Read'
-//           'Microsoft.Communication/EmailServices/write'
-//         ]
-//         dataActions: [
-//           'string'
-//         ]
-//         notActions: [
-//           'string'
-//         ]
-//         notDataActions: [
-//           'string'
-//         ]
-//       }
-//     ]
-//     roleName: 'string'
-//     type: 'string'
-//   }
-// }
-
-
-
-output webAppUrl string = webApp.properties.defaultHostName
+output applicationUrl string = 'https://${containerApp.properties.configuration.ingress.fqdn}'
+output containerAppsEnvironmentName string = containerAppsEnvironment.name
+output postgresServerFqdn string = postgres.properties.fullyQualifiedDomainName

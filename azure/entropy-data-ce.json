@@ -4,8 +4,8 @@
   "metadata": {
     "_generator": {
       "name": "bicep",
-      "version": "0.28.1.47646",
-      "templateHash": "12522166884813929951"
+      "version": "0.47.16.16243",
+      "templateHash": "12240560505623585445"
     }
   },
   "parameters": {
@@ -16,18 +16,71 @@
         "description": "Location for all resources."
       }
     },
-    "webAppName": {
+    "containerAppName": {
       "type": "string",
-      "defaultValue": "[format('entropydata-{0}', resourceGroup().name)]",
+      "defaultValue": "entropy-data",
+      "minLength": 2,
+      "maxLength": 32,
       "metadata": {
-        "description": "The name of the web app. This will also be used for the default domain name ${webAppName}.azurewebsites.net, so it must be unique."
+        "description": "The name of the Container App. Lowercase letters, numbers and hyphens only. It is part of the default domain name https://${containerAppName}.<random>.<region>.azurecontainerapps.io"
+      }
+    },
+    "containerImageUrl": {
+      "type": "string",
+      "defaultValue": "docker.io/entropydata/entropy-data-ce:latest",
+      "metadata": {
+        "description": "The Docker container image."
+      }
+    },
+    "containerCpu": {
+      "type": "string",
+      "defaultValue": "1",
+      "metadata": {
+        "description": "CPU cores for the container. Together with the memory it must be one of the allowed combinations of the Consumption workload profile, e.g. 0.5/1Gi, 1/2Gi, 2/4Gi, 4/8Gi."
+      }
+    },
+    "containerMemory": {
+      "type": "string",
+      "defaultValue": "2Gi",
+      "metadata": {
+        "description": "Memory for the container, e.g. 2Gi."
+      }
+    },
+    "minReplicas": {
+      "type": "int",
+      "defaultValue": 1,
+      "minValue": 1,
+      "metadata": {
+        "description": "Minimum number of running replicas."
+      }
+    },
+    "maxReplicas": {
+      "type": "int",
+      "defaultValue": 1,
+      "minValue": 1,
+      "metadata": {
+        "description": "Maximum number of running replicas."
+      }
+    },
+    "applicationHostWeb": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Public URL of the application, e.g. https://entropy.example.com. Used in emails to build links. Leave empty to use the default domain of the Container App."
+      }
+    },
+    "superAdmins": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Comma-separated email addresses of super admins. Can be changed later."
       }
     },
     "smtpHost": {
       "type": "string",
-      "defaultValue": "smtp.sendgrid.net",
+      "defaultValue": "",
       "metadata": {
-        "description": "SMTP server host. You can use SendGrid or any other SMTP server."
+        "description": "SMTP server host. You can use Azure Communication Services, SendGrid or any other SMTP server. Leave empty to run without transactional emails (account verification, notifications)."
       }
     },
     "smtpPort": {
@@ -39,13 +92,14 @@
     },
     "smtpUsername": {
       "type": "string",
-      "defaultValue": "apikey",
+      "defaultValue": "",
       "metadata": {
         "description": "Login user of the SMTP server"
       }
     },
     "smtpPassword": {
       "type": "securestring",
+      "defaultValue": "",
       "metadata": {
         "description": "Login password of the SMTP server. If you use SendGrid, this is your API Key."
       }
@@ -66,24 +120,9 @@
     },
     "mailFrom": {
       "type": "string",
-      "defaultValue": "hello@entropy-data.com",
-      "minLength": 3,
+      "defaultValue": "",
       "metadata": {
-        "description": "The sender email address for Entropy Data emails. For many email providers, such as SendGrid, that must be a verified sender email address."
-      }
-    },
-    "containerImageUrl": {
-      "type": "string",
-      "defaultValue": "entropydata/entropy-data-ce:latest",
-      "metadata": {
-        "description": "The Docker container image URL."
-      }
-    },
-    "appServicePlanSku": {
-      "type": "string",
-      "defaultValue": "P1v2",
-      "metadata": {
-        "description": "App Service plan pricing tier. Should have 4 GB."
+        "description": "The sender email address for Entropy Data emails. For many email providers, such as SendGrid, that must be a verified sender email address. Required when smtpHost is set."
       }
     },
     "postgresComputeTierSizeSku": {
@@ -104,7 +143,7 @@
       "type": "string",
       "defaultValue": "[format('entropydata-postgres-{0}', resourceGroup().name)]",
       "metadata": {
-        "description": "The name of the PostgreSQL server."
+        "description": "The name of the PostgreSQL server. Must be globally unique."
       }
     },
     "postgresAdminUsername": {
@@ -142,25 +181,25 @@
         "description": "The address prefix for the virtual network."
       }
     },
-    "webappSubnetName": {
+    "containerAppsSubnetName": {
       "type": "string",
-      "defaultValue": "webapp-subnet",
+      "defaultValue": "containerapps-subnet",
       "metadata": {
-        "description": "The subnet name."
+        "description": "The name of the Container Apps infrastructure subnet."
       }
     },
-    "webappSubnetAddressPrefix": {
+    "containerAppsSubnetAddressPrefix": {
       "type": "string",
-      "defaultValue": "10.0.1.0/24",
+      "defaultValue": "10.0.0.0/23",
       "metadata": {
-        "description": "The address prefix for the subnet."
+        "description": "The address prefix for the Container Apps infrastructure subnet. Min /27."
       }
     },
     "postgresSubnetName": {
       "type": "string",
       "defaultValue": "postgres-subnet",
       "metadata": {
-        "description": "The address prefix for the PostgreSQL subnet."
+        "description": "The name of the PostgreSQL subnet."
       }
     },
     "postgresSubnetAddressPrefix": {
@@ -169,122 +208,169 @@
       "metadata": {
         "description": "The address prefix for the PostgreSQL subnet."
       }
+    },
+    "logRetentionInDays": {
+      "type": "int",
+      "defaultValue": 30,
+      "metadata": {
+        "description": "Retention of container logs in Log Analytics in days."
+      }
     }
+  },
+  "variables": {
+    "hasSmtp": "[not(empty(parameters('smtpHost')))]",
+    "hasSmtpPassword": "[and(variables('hasSmtp'), not(empty(parameters('smtpPassword'))))]",
+    "postgresPasswordSecretName": "postgres-password",
+    "smtpPasswordSecretName": "smtp-password",
+    "smtpEnv": [
+      {
+        "name": "SPRING_MAIL_HOST",
+        "value": "[parameters('smtpHost')]"
+      },
+      {
+        "name": "SPRING_MAIL_PORT",
+        "value": "[parameters('smtpPort')]"
+      },
+      {
+        "name": "SPRING_MAIL_USERNAME",
+        "value": "[parameters('smtpUsername')]"
+      },
+      {
+        "name": "SPRING_MAIL_PROPERTIES_MAIL_SMTP_AUTH",
+        "value": "[toLower(string(parameters('smtpBasicAuth')))]"
+      },
+      {
+        "name": "SPRING_MAIL_PROPERTIES_MAIL_SMTP_STARTTLS_ENABLE",
+        "value": "[toLower(string(parameters('smtpStarttls')))]"
+      },
+      {
+        "name": "APPLICATION_MAIL_FROM",
+        "value": "[parameters('mailFrom')]"
+      }
+    ],
+    "smtpPasswordEnv": [
+      {
+        "name": "SPRING_MAIL_PASSWORD",
+        "secretRef": "[variables('smtpPasswordSecretName')]"
+      }
+    ]
   },
   "resources": [
     {
-      "type": "Microsoft.Web/serverfarms",
-      "apiVersion": "2020-12-01",
-      "name": "[format('{0}-plan', parameters('webAppName'))]",
+      "type": "Microsoft.OperationalInsights/workspaces",
+      "apiVersion": "2023-09-01",
+      "name": "[format('{0}-logs', parameters('containerAppName'))]",
       "location": "[parameters('location')]",
-      "sku": {
-        "name": "[parameters('appServicePlanSku')]"
-      },
       "properties": {
-        "reserved": true
+        "sku": {
+          "name": "PerGB2018"
+        },
+        "retentionInDays": "[parameters('logRetentionInDays')]"
       }
     },
     {
-      "type": "Microsoft.Web/sites",
-      "apiVersion": "2023-12-01",
-      "name": "[parameters('webAppName')]",
+      "type": "Microsoft.App/managedEnvironments",
+      "apiVersion": "2025-07-01",
+      "name": "[format('{0}-env', parameters('containerAppName'))]",
       "location": "[parameters('location')]",
-      "kind": "app,linux,docker",
       "properties": {
-        "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', format('{0}-plan', parameters('webAppName')))]",
-        "siteConfig": {
-          "appSettings": [
-            {
-              "name": "WEBSITES_ENABLE_APP_SERVICE_STORAGE",
-              "value": "false"
-            },
-            {
-              "name": "DOCKER_REGISTRY_SERVER_URL",
-              "value": "https://index.docker.io"
-            },
-            {
-              "name": "POSTGRES_HOST",
-              "value": "[format('{0}.postgres.database.azure.com', parameters('postgresServerName'))]"
-            },
-            {
-              "name": "POSTGRES_DB",
-              "value": "[parameters('databaseName')]"
-            },
-            {
-              "name": "POSTGRES_USER",
-              "value": "[format('{0}@{1}', parameters('postgresAdminUsername'), parameters('postgresServerName'))]"
-            },
-            {
-              "name": "POSTGRES_PASSWORD",
-              "value": "[parameters('postgresAdminPassword')]"
-            },
-            {
-              "name": "WEBSITES_PORT",
-              "value": "8080"
-            },
-            {
-              "name": "APPLICATION_HOST_WEB",
-              "value": "https://${WEBSITE_HOSTNAME}"
-            },
-            {
-              "name": "SPRING_DATASOURCE_URL",
-              "value": "[format('jdbc:postgresql://{0}.postgres.database.azure.com:5432/{1}', parameters('postgresServerName'), parameters('databaseName'))]"
-            },
-            {
-              "name": "SPRING_DATASOURCE_USERNAME",
-              "value": "[parameters('postgresAdminUsername')]"
-            },
-            {
-              "name": "SPRING_DATASOURCE_PASSWORD",
-              "value": "[parameters('postgresAdminPassword')]"
-            },
-            {
-              "name": "SPRING_MAIL_HOST",
-              "value": "[parameters('smtpHost')]"
-            },
-            {
-              "name": "SPRING_MAIL_PORT",
-              "value": "[parameters('smtpPort')]"
-            },
-            {
-              "name": "SPRING_MAIL_USERNAME",
-              "value": "[parameters('smtpUsername')]"
-            },
-            {
-              "name": "SPRING_MAIL_PASSWORD",
-              "value": "[parameters('smtpPassword')]"
-            },
-            {
-              "name": "SPRING_MAIL_PROPERTIES_MAIL_SMTP_AUTH",
-              "value": "[toLower(string(parameters('smtpBasicAuth')))]"
-            },
-            {
-              "name": "SPRING_MAIL_PROPERTIES_MAIL_SMTP_STARTTLS_ENABLE",
-              "value": "[toLower(string(parameters('smtpStarttls')))]"
-            },
-            {
-              "name": "APPLICATION_MAIL_FROM",
-              "value": "[parameters('mailFrom')]"
-            }
-          ],
-          "linuxFxVersion": "[format('DOCKER|index.docker.io/{0}', parameters('containerImageUrl'))]",
-          "alwaysOn": true,
-          "vnetRouteAllEnabled": true,
-          "ftpsState": "FtpsOnly",
-          "appCommandLine": ""
+        "appLogsConfiguration": {
+          "destination": "log-analytics",
+          "logAnalyticsConfiguration": {
+            "customerId": "[reference(resourceId('Microsoft.OperationalInsights/workspaces', format('{0}-logs', parameters('containerAppName'))), '2023-09-01').customerId]",
+            "sharedKey": "[listKeys(resourceId('Microsoft.OperationalInsights/workspaces', format('{0}-logs', parameters('containerAppName'))), '2023-09-01').primarySharedKey]"
+          }
         },
-        "virtualNetworkSubnetId": "[format('{0}/subnets/{1}', resourceId('Microsoft.Network/virtualNetworks', parameters('vnetName')), parameters('webappSubnetName'))]",
-        "httpsOnly": true
+        "vnetConfiguration": {
+          "internal": false,
+          "infrastructureSubnetId": "[format('{0}/subnets/{1}', resourceId('Microsoft.Network/virtualNetworks', parameters('vnetName')), parameters('containerAppsSubnetName'))]"
+        },
+        "workloadProfiles": [
+          {
+            "name": "Consumption",
+            "workloadProfileType": "Consumption"
+          }
+        ],
+        "zoneRedundant": false
       },
       "dependsOn": [
-        "[resourceId('Microsoft.Web/serverfarms', format('{0}-plan', parameters('webAppName')))]",
-        "[resourceId('Microsoft.DBforPostgreSQL/flexibleServers', parameters('postgresServerName'))]",
+        "[resourceId('Microsoft.OperationalInsights/workspaces', format('{0}-logs', parameters('containerAppName')))]",
         "[resourceId('Microsoft.Network/virtualNetworks', parameters('vnetName'))]"
       ]
     },
     {
+      "type": "Microsoft.App/containerApps",
+      "apiVersion": "2025-07-01",
+      "name": "[parameters('containerAppName')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "managedEnvironmentId": "[resourceId('Microsoft.App/managedEnvironments', format('{0}-env', parameters('containerAppName')))]",
+        "workloadProfileName": "Consumption",
+        "configuration": {
+          "activeRevisionsMode": "Single",
+          "ingress": {
+            "external": true,
+            "targetPort": 8080,
+            "transport": "auto",
+            "allowInsecure": false
+          },
+          "secrets": "[concat(createArray(createObject('name', variables('postgresPasswordSecretName'), 'value', parameters('postgresAdminPassword'))), if(variables('hasSmtpPassword'), createArray(createObject('name', variables('smtpPasswordSecretName'), 'value', parameters('smtpPassword'))), createArray()))]"
+        },
+        "template": {
+          "containers": [
+            {
+              "name": "entropy-data",
+              "image": "[parameters('containerImageUrl')]",
+              "resources": {
+                "cpu": "[json(parameters('containerCpu'))]",
+                "memory": "[parameters('containerMemory')]"
+              },
+              "env": "[concat(createArray(createObject('name', 'APPLICATION_HOST_WEB', 'value', if(empty(parameters('applicationHostWeb')), format('https://{0}.{1}', parameters('containerAppName'), reference(resourceId('Microsoft.App/managedEnvironments', format('{0}-env', parameters('containerAppName'))), '2025-07-01').defaultDomain), parameters('applicationHostWeb'))), createObject('name', 'APPLICATION_SUPERADMINS', 'value', parameters('superAdmins')), createObject('name', 'SPRING_DATASOURCE_URL', 'value', format('jdbc:postgresql://{0}:5432/{1}', reference(resourceId('Microsoft.DBforPostgreSQL/flexibleServers', parameters('postgresServerName')), '2024-08-01').fullyQualifiedDomainName, parameters('databaseName'))), createObject('name', 'SPRING_DATASOURCE_USERNAME', 'value', parameters('postgresAdminUsername')), createObject('name', 'SPRING_DATASOURCE_PASSWORD', 'secretRef', variables('postgresPasswordSecretName'))), if(variables('hasSmtp'), variables('smtpEnv'), createArray()), if(variables('hasSmtpPassword'), variables('smtpPasswordEnv'), createArray()))]",
+              "probes": [
+                {
+                  "type": "Startup",
+                  "httpGet": {
+                    "path": "/actuator/health/readiness",
+                    "port": 8080
+                  },
+                  "periodSeconds": 10,
+                  "failureThreshold": 30
+                },
+                {
+                  "type": "Readiness",
+                  "httpGet": {
+                    "path": "/actuator/health/readiness",
+                    "port": 8080
+                  },
+                  "periodSeconds": 10,
+                  "failureThreshold": 3
+                },
+                {
+                  "type": "Liveness",
+                  "httpGet": {
+                    "path": "/actuator/health/liveness",
+                    "port": 8080
+                  },
+                  "periodSeconds": 30,
+                  "failureThreshold": 3
+                }
+              ]
+            }
+          ],
+          "scale": {
+            "minReplicas": "[parameters('minReplicas')]",
+            "maxReplicas": "[parameters('maxReplicas')]"
+          }
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.App/managedEnvironments', format('{0}-env', parameters('containerAppName')))]",
+        "[resourceId('Microsoft.DBforPostgreSQL/flexibleServers', parameters('postgresServerName'))]"
+      ]
+    },
+    {
       "type": "Microsoft.DBforPostgreSQL/flexibleServers",
-      "apiVersion": "2023-12-01-preview",
+      "apiVersion": "2024-08-01",
       "name": "[parameters('postgresServerName')]",
       "location": "[parameters('location')]",
       "sku": {
@@ -293,12 +379,7 @@
       },
       "properties": {
         "version": "16",
-        "replica": {
-          "role": "Primary"
-        },
         "storage": {
-          "iops": 500,
-          "tier": "P10",
           "storageSizeGB": "[parameters('postgresStorageSizeGB')]",
           "autoGrow": "Enabled"
         },
@@ -316,7 +397,6 @@
         },
         "administratorLogin": "[parameters('postgresAdminUsername')]",
         "administratorLoginPassword": "[parameters('postgresAdminPassword')]",
-        "availabilityZone": "3",
         "backup": {
           "backupRetentionDays": 7,
           "geoRedundantBackup": "Disabled"
@@ -329,17 +409,17 @@
           "dayOfWeek": 0,
           "startHour": 0,
           "startMinute": 0
-        },
-        "replicationRole": "Primary"
+        }
       },
       "dependsOn": [
         "[resourceId('Microsoft.Network/privateDnsZones', 'privatelink.postgres.database.azure.com')]",
+        "[resourceId('Microsoft.Network/privateDnsZones/virtualNetworkLinks', 'privatelink.postgres.database.azure.com', format('{0}-dblink', 'privatelink.postgres.database.azure.com'))]",
         "[resourceId('Microsoft.Network/virtualNetworks', parameters('vnetName'))]"
       ]
     },
     {
       "type": "Microsoft.DBforPostgreSQL/flexibleServers/configurations",
-      "apiVersion": "2023-12-01-preview",
+      "apiVersion": "2024-08-01",
       "name": "[format('{0}/{1}', parameters('postgresServerName'), 'azure.extensions')]",
       "properties": {
         "value": "VECTOR,UUID-OSSP,HSTORE",
@@ -351,7 +431,7 @@
     },
     {
       "type": "Microsoft.Network/virtualNetworks",
-      "apiVersion": "2020-06-01",
+      "apiVersion": "2024-05-01",
       "name": "[parameters('vnetName')]",
       "location": "[parameters('location')]",
       "properties": {
@@ -362,14 +442,14 @@
         },
         "subnets": [
           {
-            "name": "[parameters('webappSubnetName')]",
+            "name": "[parameters('containerAppsSubnetName')]",
             "properties": {
-              "addressPrefix": "[parameters('webappSubnetAddressPrefix')]",
+              "addressPrefix": "[parameters('containerAppsSubnetAddressPrefix')]",
               "delegations": [
                 {
-                  "name": "dlg-appServices",
+                  "name": "dlg-containerapps",
                   "properties": {
-                    "serviceName": "Microsoft.Web/serverfarms"
+                    "serviceName": "Microsoft.App/environments"
                   }
                 }
               ]
@@ -393,28 +473,15 @@
       }
     },
     {
-      "type": "Microsoft.Web/sites/virtualNetworkConnections",
-      "apiVersion": "2023-12-01",
-      "name": "[format('{0}/{1}', parameters('webAppName'), format('{0}vnet', parameters('webAppName')))]",
-      "properties": {
-        "vnetResourceId": "[format('{0}/subnets/{1}', resourceId('Microsoft.Network/virtualNetworks', parameters('vnetName')), parameters('webappSubnetName'))]",
-        "isSwift": true
-      },
-      "dependsOn": [
-        "[resourceId('Microsoft.Network/virtualNetworks', parameters('vnetName'))]",
-        "[resourceId('Microsoft.Web/sites', parameters('webAppName'))]"
-      ]
-    },
-    {
       "type": "Microsoft.Network/privateDnsZones",
-      "apiVersion": "2020-06-01",
+      "apiVersion": "2024-06-01",
       "name": "privatelink.postgres.database.azure.com",
       "location": "global",
       "properties": {}
     },
     {
       "type": "Microsoft.Network/privateDnsZones/virtualNetworkLinks",
-      "apiVersion": "2020-06-01",
+      "apiVersion": "2024-06-01",
       "name": "[format('{0}/{1}', 'privatelink.postgres.database.azure.com', format('{0}-dblink', 'privatelink.postgres.database.azure.com'))]",
       "location": "global",
       "properties": {
@@ -430,9 +497,17 @@
     }
   ],
   "outputs": {
-    "webAppUrl": {
+    "applicationUrl": {
       "type": "string",
-      "value": "[reference(resourceId('Microsoft.Web/sites', parameters('webAppName')), '2023-12-01').defaultHostName]"
+      "value": "[format('https://{0}', reference(resourceId('Microsoft.App/containerApps', parameters('containerAppName')), '2025-07-01').configuration.ingress.fqdn)]"
+    },
+    "containerAppsEnvironmentName": {
+      "type": "string",
+      "value": "[format('{0}-env', parameters('containerAppName'))]"
+    },
+    "postgresServerFqdn": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.DBforPostgreSQL/flexibleServers', parameters('postgresServerName')), '2024-08-01').fullyQualifiedDomainName]"
     }
   }
 }
